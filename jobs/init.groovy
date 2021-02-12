@@ -1,6 +1,6 @@
 pipelineJob('Build-Pipeline') {
     parameters {
-        booleanParam('skipTests', 'develop')
+        booleanParam('skipTests', true)
     }
     definition {
         cpsScm {
