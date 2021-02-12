@@ -1,0 +1,16 @@
+jobs:
+  - script: >
+      job('Job_DSL_Seed') {
+        scm {
+          git {
+            remote {
+              url 'https://github.com/hawkpatrick/custom-jenkins-openshift.git'
+            }
+          }
+        }
+        steps {
+          jobDsl {
+            targets 'jobs/**/*.groovy'
+          }
+        }
+      }
