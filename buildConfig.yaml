@@ -3,7 +3,6 @@ kind: BuildConfig
 metadata:
   name: custom-jenkins-build
 spec:
-  serviceAccount: jenkins
   source:                       
     git:
       uri: https://github.com/hawkpatrick/custom-jenkins-openshift
@@ -13,8 +12,11 @@ spec:
     sourceStrategy:
       from:
         kind: ImageStreamTag
-        name: jenkins:latest
+        name: 'jenkins:latest'
         namespace: openshift
+      env:
+        - name: CASC_JENKINS_CONFIG
+          value: $JENKINS_HOME/casc_configs
     type: Source
   output:                       
     to:
