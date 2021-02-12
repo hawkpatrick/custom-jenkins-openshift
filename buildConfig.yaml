@@ -1,8 +1,9 @@
-apiVersion: v1
+apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
   name: custom-jenkins-build
 spec:
+  serviceAccount: jenkins
   source:                       
     git:
       uri: https://github.com/hawkpatrick/custom-jenkins-openshift
@@ -19,3 +20,6 @@ spec:
     to:
       kind: ImageStreamTag
       name: custom-jenkins:latest
+      namepsace: patrick-hock-code
+
+
