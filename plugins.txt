@@ -2,5 +2,4 @@ build-pipeline-plugin:latest
 http_request:latest
 sonar:latest
 slack:latest
-configuration-as-code-support:latest
 configuration-as-code:latest
