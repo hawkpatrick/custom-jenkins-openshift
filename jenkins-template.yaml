@@ -1,0 +1,400 @@
+
+apiVersion: template.openshift.io/v1
+kind: Template
+labels:
+  template-version: cicd-infrastructure-0.1.0
+metadata:
+  name: cicd-infrastructure
+  labels:
+    template: cicd-infrastructure
+  annotations:
+    description: Creates the jenkins infrastructure.
+    openshift.io/display-name: RMS jenkins infrastructure
+    tags: ci
+message: |
+  The RMS jenkins infrastructure is now being built and configured.
+
+objects:
+
+# begin git-ssh-base.yaml
+
+- kind: Secret
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: ${GIT_SECRET_NAME}
+  type: kubernetes.io/ssh-auth
+  stringData:
+    ssh-privatekey: ${GIT_PRIVATE_SSH_KEY}
+
+# end git-ssh-base.yaml
+
+
+
+# begin jenkins-base.yaml
+
+- kind: PersistentVolumeClaim
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_APP_NAME}'
+    labels:
+      app: ${JENKINS_APP_NAME}
+  spec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: '${JENKINS_VOLUME_CAPACITY}'
+
+
+- kind: Route
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_APP_NAME}'
+    labels:
+      app: ${JENKINS_APP_NAME}
+      template.openshift.io/expose-uri: 'https://{.spec.host}{.spec.path}'
+  spec:
+    to:
+      kind: Service
+      name: '${JENKINS_APP_NAME}'
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
+- kind: BuildConfig
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_APP_NAME}-build'
+    labels:
+      app: ${JENKINS_APP_NAME}
+  spec:
+    source:
+      type: Git
+      git:
+        uri: '${JENKINS_GIT_URL}'
+        ref: ${JENKINS_VERSION}
+      contextDir: '3_9'
+      sourceSecret:
+        name: '${GIT_SECRET_NAME}'
+    strategy:
+        type: Source
+        sourceStrategy:
+          from:
+            kind: DockerImage
+            name: 'registry.access.redhat.com/openshift3/jenkins-2-rhel7:v3.9'
+          env:
+            - name: TARGET_ENVIRONMENT
+              value: TEST
+            - name: OVERRIDE_PV_CONFIG_WITH_IMAGE_CONFIG
+              value: 'true'
+    output:
+      to:
+        kind: ImageStreamTag
+        name: '${JENKINS_APP_NAME}-image:${JENKINS_VERSION}'
+    triggers:
+      - type: ConfigChange
+
+- kind: ImageStream
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_APP_NAME}-image'
+    labels:
+      app: ${JENKINS_APP_NAME}
+  spec: {}
+
+- kind: DeploymentConfig
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_APP_NAME}'
+    labels:
+      app: ${JENKINS_APP_NAME}
+    annotations:
+      template.alpha.openshift.io/wait-for-ready: 'true'
+  spec:
+    strategy:
+      type: Recreate
+    triggers:
+      - type: ImageChange
+        imageChangeParams:
+          automatic: true
+          containerNames:
+            - '${JENKINS_APP_NAME}'
+          from:
+            kind: ImageStreamTag
+            name: '${JENKINS_APP_NAME}-image:${JENKINS_VERSION}'
+          lastTriggeredImage: ''
+      - type: ConfigChange
+    replicas: 1
+    selector:
+      app: '${JENKINS_APP_NAME}'
+    template:
+      metadata:
+        labels:
+          app: ${JENKINS_APP_NAME}
+      spec:
+        serviceAccountName: '${JENKINS_APP_NAME}'
+        containers:
+          - name: '${JENKINS_APP_NAME}'
+            image: ' '
+            readinessProbe:
+              timeoutSeconds: 3
+              initialDelaySeconds: 420
+              httpGet:
+                path: /login
+                port: 8080
+            livenessProbe:
+              timeoutSeconds: 3
+              initialDelaySeconds: 420
+              failureThreshold: 30
+              httpGet:
+                path: /login
+                port: 8080
+            env:
+              - name: OPENSHIFT_JENKINS_JVM_ARCH
+                value: i386
+              - name: OPENSHIFT_ENABLE_OAUTH
+                value: 'true'
+              - name: OPENSHIFT_ENABLE_REDIRECT_PROMPT
+                value: 'true'
+              - name: KUBERNETES_MASTER
+                value: 'https://kubernetes.default:443'
+              - name: KUBERNETES_TRUST_CERTIFICATES
+                value: 'true'
+              - name: OVERRIDE_PV_CONFIG_WITH_IMAGE_CONFIG
+                value: 'true'
+              - name: JAVA_OPTS
+                value: '${JENKINS_JAVA_OPTS}'
+              - name: JENKINS_SERVICE_NAME
+                value: '${JENKINS_APP_NAME}'
+              - name: JNLP_SERVICE_NAME
+                value: '${JENKINS_JNLP_SERVICE_NAME}'
+              - name: TARGET_ENVIRONMENT
+                value: TEST
+              - name: BITBUCKET_ROOT_URL
+                value: '${JENKINS_BITBUCKET_ROOT_URL}'
+            resources:
+              requests:
+                memory: 500Mi
+                cpu: 200m
+              limits:
+                memory: '${JENKINS_MEMORY_LIMIT}'
+                cpu: 2000m
+            volumeMounts:
+              - name: '${JENKINS_APP_NAME}-data'
+                mountPath: /var/lib/jenkins
+            terminationMessagePath: /dev/termination-log
+            imagePullPolicy: IfNotPresent
+            capabilities: {}
+            securityContext:
+              capabilities: {}
+              privileged: false
+        volumes:
+          - name: '${JENKINS_APP_NAME}-data'
+            persistentVolumeClaim:
+              claimName: '${JENKINS_APP_NAME}'
+          - name: podinfo
+            downwardAPI:
+              defaultMode: 420
+              items:
+                - fieldRef:
+                    apiVersion: template.openshift.io/v1
+                    fieldPath: metadata.annotations
+                  path: pod_informations
+        restartPolicy: Always
+        dnsPolicy: ClusterFirst
+
+- kind: ServiceAccount
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_APP_NAME}'
+    labels:
+      app: ${JENKINS_APP_NAME}
+    annotations:
+      serviceaccounts.openshift.io/oauth-redirectreference.jenkins: >-
+        {"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"${JENKINS_APP_NAME}"}}
+
+- kind: RoleBinding
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_APP_NAME}_edit'
+    labels:
+      app: ${JENKINS_APP_NAME}
+  groupNames: null
+  subjects:
+    - kind: ServiceAccount
+      name: '${JENKINS_APP_NAME}'
+  roleRef:
+    name: edit
+
+- kind: Service
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_JNLP_SERVICE_NAME}'
+    labels:
+      app: ${JENKINS_APP_NAME}
+  spec:
+    ports:
+      - name: agent
+        protocol: TCP
+        port: 50000
+        targetPort: 50000
+        nodePort: 0
+    selector:
+      app: '${JENKINS_APP_NAME}'
+    type: ClusterIP
+    sessionAffinity: None
+
+- kind: Service
+  apiVersion: template.openshift.io/v1
+  metadata:
+    name: '${JENKINS_APP_NAME}'
+    labels:
+      app: ${JENKINS_APP_NAME}
+    annotations:
+      prometheus.io/probe: 'true'
+      prometheus.io/probe-route-path: /prometheus
+      prometheus.io/scrape: 'true'
+      prometheus.io/scheme: http
+      prometheus.io/path: /prometheus
+      service.alpha.openshift.io/dependencies: '[{"name": "${JENKINS_JNLP_SERVICE_NAME}", "namespace": "", "kind": "Service"}]'
+      service.openshift.io/infrastructure: 'true'
+  spec:
+    ports:
+      - name: web
+        protocol: TCP
+        port: 80
+        targetPort: 8080
+        nodePort: 0
+    selector:
+      app: '${JENKINS_APP_NAME}'
+    type: ClusterIP
+    sessionAffinity: None
+
+
+# end jenkins-base.yaml
+
+
+
+parameters:
+
+# begin jenkins-base.yaml
+
+
+- name: JENKINS_APP_NAME
+  displayName: 'Jenkins Service Name (lowercase)'
+  description: 'The name of the OpenShift Service exposed for the Jenkins container.'
+  value: 'jenkins'
+  required: true
+
+- name: JENKINS_JNLP_SERVICE_NAME
+  displayName: 'Jenkins JNLP Service Name'
+  description: 'The name of the service used for master/slave communication.'
+  value: 'jenkins-jnlp'
+  required: true
+
+- name: JENKINS_GIT_URL
+  displayName: 'Jenkins Git URL'
+  description: 'The Git URL to the Jenkins-Template Repo'
+  value: 'ssh://git@bitbucket.rms-consult.de:7999/mi/jenkins-template.git'
+  required: true  
+  
+- name: JENKINS_VERSION
+  displayName: Version of the Jenkins Scripts
+  description: The Version of the scripts as a Bitbucket tag
+  value: 'v1.3.0'
+  required: true
+
+- name: JENKINS_MEMORY_LIMIT
+  displayName: 'Jenkins Memory Limit'
+  description: 'Maximum amount of memory the container can use.'
+  value: '1Gi'
+  required: true
+
+- name: JENKINS_VOLUME_CAPACITY
+  displayName: 'Jenkins Volume Capacity'
+  description: 'Volume space available for data, e.g. 512Mi, 2Gi.'
+  value: '5Gi'
+  required: true
+
+
+- name: JENKINS_JAVA_OPTS
+  displayName: 'Jenkins Java Options'
+  description: 'Set Options to the JVM'
+  value: '-XX:MaxMetaspaceSize=256m'
+  required: true
+
+- name: JENKINS_BITBUCKET_ROOT_URL
+  displayName: 'Jenkins Bitbucket Root URL'
+  description: 'The root URL of the target Bitbucket server. Used to update the build status. Leave empty to disable status updates.'
+  value: 'https://bitbucket.rms-consult.de'
+
+# end jenkins-base.yaml
+
+
+# begin shared docker registry
+
+
+- name: REGISTRY
+  displayName: Internal Docker Registry
+  description: Internal Docker Registry to locate the image (with port)
+  value: 'docker-registry.default.svc:5000'
+  required: true
+
+# end shared docker registry
+
+
+# begin shared git secret name
+
+
+- name: GIT_SECRET_NAME
+  displayName: Openshift SSH GIT Secret Name
+  description: Name of the Secret to store the SSH Key
+  required: true
+  value: git-ssh
+
+# end shared git secret name
+
+
+
+# begin shared git ssh key
+
+
+- name: GIT_PRIVATE_SSH_KEY
+  displayName: Private Git SSH Key for the repository
+  description: The private git ssh key to clone git repositories (defaults to MAac Project)
+  required: true
+  value: |-
+    -----BEGIN RSA PRIVATE KEY-----
+    MIIEowIBAAKCAQEA21cL6NHkA3L+1f41eqGNYpi9taB9LePtrNMx+5HRDYjaaR+i
+    ruCp+tVVNnSb4MW2kdWPJiubGyMQMzQ29LUxoDCjgOaTaEoGeK9LuFnLaEaMBqcs
+    bt/aJ7M1F6D/0A9xySDz/HOJWYnpij1iLp4aisq8PGNxkjf36gBzmdg8kZMvpQuK
+    xUl6k3hY8+r3pOI2wUnp2fPkzfFDd6x8K9cnAIEg7rmcJIiDHDKoJqrgOq5NGREJ
+    VfXt47nH+RYQj2Q9XEejzsDGBqf7W8+BL2ivbPBqp5y+5XSkl6zDANmMVTjJPGyp
+    Bu+Z/rR+bt4PPlnGGnLrQgSUFAejiXiU9Z7E4wIDAQABAoIBADPmJeBCAbS7OgdC
+    bj8FCOJCh+j4/4WjP/K7ykDfYNrV/fAP1zuP10iNv+rxroyB29An+wYqHTpPkp67
+    BSHj2ckwmQ9//3MWyO83czA8tv+Gac2NMttNRl5MbgyYQM9nSCIyFOkwIVi5ZDQc
+    kCW9rUQX8nBLi2zwp02MK85ENxiujbjfQHlw8pTNWYTDcs0h68fKQ5q5jDSk8NPM
+    /kf3eetMK9rgNBxxOOHIsI8ReU84diJo1QKWcySrXto9tgpjO8EU7M9+3H4IObWH
+    QIXjsp2+JCSuo8Ws9QPH0xbOVd/QhawKOP3nQrcYO25IHwr7BeYhAQKVuTRploDS
+    9lq9R+kCgYEA+SJpR4x2pWJV0etbRR9hz0PHpiaK0mYf4+IUW9LxEXovyjYhrRab
+    Tzj2bfUz3zNDUN2t09MjdCN6EY/iCIiDF3gnvWm2+13RPMJVw6VY7gApDwWAeQ6l
+    03nZC49EuqWkHi5E2iO8JIZwzDXhCEeN8M4jhnKzZaiV5j5Kw3rUJfcCgYEA4WJx
+    Phv+EZF7Cqv2916cmj4hnb1De5h7pw3+tbwi66EgVqd9UnFFMEWqw4QwdMr3iMW/
+    TdJFVLQbRO/OQDAQaPXtHv74dS3rgA1d+NHSM/A1UvgXWIFUl30zRVu7vD0WJ3jN
+    oyMvOPFwYGFxKQ2C1XXuGxr7E1feUYBx3TSrLXUCgYEA1PySPNTc6e7zp48qbCG0
+    INm1aVox/EXKpau18/qWlXZ8PMeiarOU+1mbc83ZFsxglFWwMhOjj7p0tWboupra
+    V8olT019XdCK/QK3B5foOzBv6aOufdAD/JOC9tr4ywipEhREUKmUQzWcYTj+tXFW
+    67OPs3WD4TkLTdebWxs7G2kCgYAONAfy5Ay0yrg4SfH8UMgJqFSx/hVcmpVgR69/
+    gGWq97J0A4YQRfcYPauvOotbMNc8lUmi+9dGqTr2sy4KOX0vQCA7TdIWgFhQ74a2
+    gXJ/t2mE2wGNoEjWaxtqCYfhKvBUeHZtC3CUZBKy4DEjZyiRjyb8Kk0cQPNPq4qB
+    aCpJaQKBgDaNOUB7XRZNoyrBeMbBmRI1MKIkJk03tM5s7H0D68RsviKdlaKlkB2O
+    OGkO41tHh1BR4QbeeBKA2eOHcvlBoWaZtDFm2ubPWzqvCBrUrF1lgRiDwndPO0F/
+    0L4hE+0SHdvxKHhz+JVXptNztaxqj98giG9B2tCTGiGISgEbnHdg
+    -----END RSA PRIVATE KEY-----
+
+# end shared git ssh key
+
+
+
+
+
